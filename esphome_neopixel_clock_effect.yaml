@@ -1,14 +1,10 @@
 substitutions:
-  num_leds: "60"
-
-esp8266:
-  board: nodemcuv2
-  framework:
-    version: recommended
-  restore_from_flash: true
+  num_leds: "24"
 
 esphome:
-  name: nodemcu_uhr
+  platform: ESP32
+  name: "esp-clock"
+  board: esp-wrover-kit
   includes:
     - "clock.h"
   on_boot:
@@ -22,12 +18,19 @@ esphome:
           effect: Sync
 
 wifi:
-  fast_connect: True  # only needed for hidden SSID
+  #fast_connect: True  # only needed for hidden SSID
   networks:
     - ssid: !secret wifi_iot_ssid
-      bssid: !secret wifi_iot_bssid
+      #bssid: !secret wifi_iot_bssid
       password: !secret wifi_iot_password
-      hidden: true
+      #hidden: true
+
+  manual_ip:
+    static_ip: 192.168.199.23
+    gateway: 192.168.199.1
+    subnet: 255.255.255.0
+    dns1: 192.168.199.1
+
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
@@ -36,14 +39,19 @@ wifi:
 
 captive_portal:
 
+api:
+
 ota:
-  password: !secret clock_ota_password
+  password: "Pippero"
+
+web_server:
+  port: 80
 
 globals:
   - id: clock_brightness
     type: int
     restore_value: yes
-    initial_value: '255'
+    initial_value: '150'
 
   - id: clock_indicators_enabled
     type: bool
@@ -60,15 +68,55 @@ globals:
     restore_value: yes
     initial_value: 'false'
 
+  - id: auto_brightness_bg_enabled
+    type: bool
+    restore_value: yes
+    initial_value: 'true'
+
+  - id: hrs_brightness
+    type: byte
+    restore_value: yes
+    initial_value: '100'
+
 time:
   - platform: sntp
     id: sntp_time
-    timezone: Europe/Berlin
+    timezone: Europe/Rome
     on_time_sync:
       then:
         - light.turn_on:
             id: light_ring
             effect: Clock
+
+sensor:
+  - platform: adc
+    raw: true
+    pin: A0
+    id: broom
+    name: "Brightness"
+    unit_of_measurement: mV
+    accuracy_decimals: 0
+    update_interval: 5s
+    filters:
+      #- multiply: 10
+    on_value_range:
+      - below: 700
+        then:
+        - globals.set:
+            id: clock_brightness
+            value: "100"
+      - above: 700
+        below: 2000
+        then:
+        - globals.set:
+            id: clock_brightness
+            value: "150"
+      - above: 2000
+        then:
+        - globals.set:
+            id: clock_brightness
+            value: "220"
+
 
 switch:
   - platform: template
@@ -112,15 +160,28 @@ switch:
         id: wide_hour_hand_enabled
         value: 'false'
 
+  - platform: template
+    name: "Auto Brightness Clock Indicator"
+    lambda: !lambda |-
+      return id(auto_brightness_bg_enabled);
+    turn_on_action:
+      globals.set:
+        id: auto_brightness_bg_enabled
+        value: 'true'
+    turn_off_action:
+      globals.set:
+        id: auto_brightness_bg_enabled
+        value: 'false'
+
 light:
   - id: light_ring
     internal: False
     platform: neopixelbus
     type: GRB
-    variant: SK6812 # WS2812X
-    pin: RX #GPIO23
+    variant: WS2812 #SK6812 # WS2812X
+    pin: GPIO02 #RX #GPIO23
     num_leds: "${num_leds}"
-    method: ESP8266_DMA
+    #method: ESP8266_DMA
     name: "NeoPixel Light"
     color_correct: [50%, 50%, 50%]
     effects:
@@ -136,3 +197,41 @@ light:
           name: Sync
           move_interval: 100ms
           scan_width: 1
+number:
+  - id: bg_brightness
+    internal: False
+    platform: template
+    optimistic: true
+    name: "Background Brightness"
+    min_value: 0
+    max_value: 255
+    step: 1
+    on_value:
+      then:
+        - globals.set:
+            id: hrs_brightness
+            value: !lambda 'return x;'
+        
+display:
+  platform: tm1637
+  clk_pin: GPIO22
+  dio_pin: GPIO21
+  id: Seven_seg_clock
+  update_interval: 500ms
+  intensity: 1
+  lambda: |-
+      if (id(broom).state <= 700 ) {
+        it.set_intensity(1);
+      } else {
+        if (id(broom).state <= 2000 && id(broom).state > 700 ) {
+          it.set_intensity(2);
+        } else {
+          it.set_intensity(5);
+        }
+      }
+      static int i = 0;
+      i++;
+      if ((i % 2) == 0)
+        it.strftime("%H.%M", id(sntp_time).now());
+      else
+        it.strftime("%H%M", id(sntp_time).now());
